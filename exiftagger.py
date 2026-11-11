@@ -37,7 +37,7 @@ __author__ = "Niccolo Rigacci"
 __copyright__ = "Copyright 2026 Niccolo Rigacci <niccolo@rigacci.org>"
 __license__ = "GPLv3-or-later"
 __email__ = "niccolo@rigacci.org"
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 APP_NAME = "exiftagger"
 EXIV2 = os.environ.get("EXIV2_COMMAND", "exiv2")
@@ -696,6 +696,7 @@ def gui_main(image_path, backup=True):
             x.setStyleSheet("QPushButton{border:0;background:transparent;}")
             x.clicked.connect(lambda: on_remove(self))
             lay.addWidget(x)
+            self.btn = x                     # the focusable widget, for tab order
 
     # ---- keyword editor: one line + wrapping chips + suggestion popup --------
     class KeywordEditor(QWidget):
@@ -703,6 +704,8 @@ def gui_main(image_path, backup=True):
             super().__init__()
             self.vocab = vocab
             self._keys = []                  # ordered display forms (identity-unique)
+            self._chips = []                 # Chip widgets in visual order
+            self._successor = None           # widget that follows the chips in tab order
             v = QVBoxLayout(self)
             v.setContentsMargins(0, 0, 0, 0)
             kw_label = QLabel("&Keywords (Xmp.dc.subject)")
@@ -798,13 +801,36 @@ def gui_main(image_path, backup=True):
             if any(identity_key(display) == identity_key(k) for k in self._keys):
                 return
             self._keys.append(display)
-            self.chip_flow.addWidget(Chip(display, self._remove))
+            chip = Chip(display, self._remove)
+            self._chips.append(chip)
+            self.chip_flow.addWidget(chip)
+            self._refresh_tab_order()
 
         def _remove(self, chip):
             self._keys = [k for k in self._keys
                           if identity_key(k) != identity_key(chip.text)]
+            if chip in self._chips:
+                self._chips.remove(chip)
             chip.setParent(None)
             chip.deleteLater()
+            self._refresh_tab_order()
+
+        def set_successor(self, widget):
+            """Widget that should follow the chips in the window tab order."""
+            self._successor = widget
+            self._refresh_tab_order()
+
+        def _refresh_tab_order(self):
+            # Dynamically created widgets land at the end of the tab chain, so the
+            # chip remove-buttons are re-threaded into visual (insertion) order
+            # after every add/remove: line edit -> chip1 -> ... -> chipN ->
+            # successor (the long-description box).
+            prev = self.edit
+            for chip in self._chips:
+                QWidget.setTabOrder(prev, chip.btn)
+                prev = chip.btn
+            if self._successor is not None:
+                QWidget.setTabOrder(prev, self._successor)
 
         def _commit_typed(self):
             text = self.edit.text().strip()
@@ -918,6 +944,8 @@ def gui_main(image_path, backup=True):
             self.ext.setPlainText(self._initial["ext"])
             root.addWidget(self.ext, 1)
             ld_label.setBuddy(self.ext)                # Alt+L
+            # Chips tab in visual order, then into the long-description box.
+            self.kw.set_successor(self.ext)
 
             # buttons
             btns = QHBoxLayout()
