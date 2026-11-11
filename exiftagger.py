@@ -48,11 +48,12 @@ def exiv2_available():
     be a bare name on PATH or an absolute path)."""
     return shutil.which(EXIV2) is not None
 
-# Exit codes (useful when spawned from a picture browser):
-EXIT_SAVED = 0          # OK pressed and something changed -> written
-EXIT_ERROR = 1          # exiv2 / I/O error
-EXIT_USAGE = 2          # bad arguments / file not found
-EXIT_NOSAVE = 10        # editor closed without writing (Cancel or no change)
+# Exit codes follow the Unix convention: 0 = success, non-zero = failure.
+# Whether a save actually happened is reported on stdout ("saved"/"unchanged"),
+# not through the exit code, so a clean Cancel is still a successful (0) run.
+EXIT_OK = 0             # normal completion (GUI: saved or cancelled; CLI: succeeded)
+EXIT_ERROR = 1          # exiv2 / I/O error (read, write, backup, missing tool)
+EXIT_USAGE = 2          # bad arguments / file or directory not found
 
 
 # ---------------------------------------------------------------------------
@@ -558,10 +559,10 @@ def cli_build_vocab(args):
         for k in sorted(added, key=str.casefold):
             print("  +", k)
         print(f"(dry-run: {path} was not written)")
-        return EXIT_SAVED
+        return EXIT_OK
     vocab.save(path)
     print(f"Vocabulary written: {path} ({len(vocab.display)} keywords)")
-    return EXIT_SAVED
+    return EXIT_OK
 
 
 def _upper_accent_score(s):
@@ -596,7 +597,7 @@ def cli_sync(args):
         else:
             errors += 1
             print(f"  ERROR    {jpg}: {err}", file=sys.stderr)
-    return EXIT_ERROR if errors else EXIT_SAVED
+    return EXIT_ERROR if errors else EXIT_OK
 
 
 # ---------------------------------------------------------------------------
@@ -1075,7 +1076,10 @@ def gui_main(image_path, backup=True):
     win = MainWindow(image_path, backup=backup)
     win.show()
     app.exec()
-    return EXIT_SAVED if win.saved else EXIT_NOSAVE
+    # Report whether a write happened on stdout (for a spawning picture browser);
+    # the exit code stays 0 for any clean close, save or cancel alike.
+    print("saved" if win.saved else "unchanged")
+    return EXIT_OK
 
 
 # ---------------------------------------------------------------------------
