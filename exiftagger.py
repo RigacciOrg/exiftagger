@@ -237,9 +237,14 @@ def decode_usercomment(raw):
         auto_codec  -> codec key to pre-select in the combo
     """
     anomalies = []
-    if raw is None:
-        return {"text": "", "anomalies": ["Error reading the tag."],
-                "include8": False, "auto_codec": None}
+    # Absent or empty UserComment is the normal "no caption" state (cameras ship
+    # it empty, and we write it empty too), not an error: show an empty box with
+    # no warning. The red flag is reserved for the malformed cases below. Note a
+    # present-but-empty undefined field (8 zero bytes) also reaches the
+    # PFX_UNDEFINED branch and stays unflagged.
+    if raw is None or len(raw) == 0:
+        return {"text": "", "anomalies": [], "include8": False,
+                "auto_codec": None}
 
     if len(raw) >= 1000:
         anomalies.append("Field of 1000 bytes or more.")
@@ -440,8 +445,13 @@ def build_write_commands(caption, keywords, ext_descr):
         cmds.append(f"set Exif.Image.ImageDescription Ascii {quoted(caption)}")
         cmds.append(f"set Xmp.dc.description LangAlt lang=x-default {caption}")
     else:
-        cmds += ["del Exif.Photo.UserComment",
-                 "del Exif.Image.ImageDescription",
+        # Empty caption -> the normal "no caption" state, close to a camera's:
+        # UserComment present but *undefined* (just the 8 zero bytes, no padding),
+        # ImageDescription present but empty (a single zero byte), and
+        # dc:description removed (cameras never add it). These exact command forms
+        # were verified against exiv2 0.28; both re-read as empty with no warning.
+        cmds += ["set Exif.Photo.UserComment charset=Undefined",
+                 "set Exif.Image.ImageDescription",
                  "del Xmp.dc.description"]
 
     # Reset the Bag first: 'set' on an existing Bag appends. If no keywords, only
