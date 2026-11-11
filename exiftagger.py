@@ -37,7 +37,7 @@ __author__ = "Niccolo Rigacci"
 __copyright__ = "Copyright 2026 Niccolo Rigacci <niccolo@rigacci.org>"
 __license__ = "GPLv3-or-later"
 __email__ = "niccolo@rigacci.org"
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 APP_NAME = "exiftagger"
 EXIV2 = os.environ.get("EXIV2_COMMAND", "exiv2")
