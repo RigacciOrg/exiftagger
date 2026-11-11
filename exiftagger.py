@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import unicodedata
@@ -448,8 +449,28 @@ def build_write_commands(caption, keywords, ext_descr):
     return cmds
 
 
-def write_metadata(path, caption, keywords, ext_descr):
-    """Write in place. Returns (ok, stderr_text)."""
+def make_original_backup(path):
+    """Create <path>.orig ONCE, as a byte-for-byte copy of the untouched file.
+    Written only on the first run (if it does not already exist), so later runs
+    preserve the true pre-exiv2 original rather than overwriting it.
+    Returns (ok, error_text)."""
+    orig = Path(str(path) + ".orig")
+    if orig.exists():
+        return True, ""
+    try:
+        shutil.copy2(path, orig)
+        return True, ""
+    except OSError as e:
+        return False, f"could not create backup {orig}: {e}"
+
+
+def write_metadata(path, caption, keywords, ext_descr, backup=True):
+    """Write in place. With backup=True, a write-once <path>.orig copy is made
+    first; if that fails the write is aborted. Returns (ok, stderr_text)."""
+    if backup:
+        ok, err = make_original_backup(path)
+        if not ok:
+            return False, err
     cmds = build_write_commands(caption, keywords, ext_descr)
     argv = [os.fsencode(EXIV2), b"-n", b"UTF-8"]
     for c in cmds:
@@ -546,7 +567,8 @@ def cli_sync(args):
         keywords = [unicodedata.normalize("NFC", collapse_spaces(s))
                     for s in read_xmp(jpg)["subjects"]]
         ext = clean_field(read_xmp(jpg)["ext_descr"])
-        ok, err = write_metadata(jpg, caption, keywords, ext)
+        ok, err = write_metadata(jpg, caption, keywords, ext,
+                                 backup=not args.no_backup)
         if ok:
             print(f"  sync     {jpg}")
         else:
@@ -559,7 +581,7 @@ def cli_sync(args):
 # GUI (PyQt6 imported here only)
 # ---------------------------------------------------------------------------
 
-def gui_main(image_path):
+def gui_main(image_path, backup=True):
     from PyQt6.QtCore import Qt, QPoint, QEvent
     from PyQt6.QtGui import QGuiApplication
     from PyQt6.QtWidgets import (
@@ -785,9 +807,10 @@ def gui_main(image_path):
 
     # ---- main window ---------------------------------------------------------
     class MainWindow(QWidget):
-        def __init__(self, path):
+        def __init__(self, path, backup=True):
             super().__init__()
             self.path = Path(path)
+            self.backup = backup
             self.saved = False
             self._closing = False       # set once accept()/reject() decided the outcome
             self.setWindowTitle(f"{APP_NAME} — {self.path.name}")
@@ -946,7 +969,8 @@ def gui_main(image_path):
                 self._closing = True
                 self.close()
                 return
-            ok, err = write_metadata(self.path, caption, keywords, ext)
+            ok, err = write_metadata(self.path, caption, keywords, ext,
+                                     backup=self.backup)
             if not ok:
                 self._show_anomaly("exiv2 write failed: " + err)
                 return
@@ -989,7 +1013,7 @@ def gui_main(image_path):
             super().keyPressEvent(event)
 
     app = QApplication(sys.argv[:1])
-    win = MainWindow(image_path)
+    win = MainWindow(image_path, backup=backup)
     win.show()
     app.exec()
     return EXIT_SAVED if win.saved else EXIT_NOSAVE
@@ -1002,6 +1026,8 @@ def gui_main(image_path):
 def build_parser():
     p = argparse.ArgumentParser(prog=APP_NAME, description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("-V", "--version", action="version",
+                   version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command")
 
     pv = sub.add_parser("vocab",
@@ -1016,16 +1042,21 @@ def build_parser():
         help="sync Exif.Photo.UserComment / Exif.Image.ImageDescription / "
              "Xmp.dc.description")
     ps.add_argument("directory")
+    ps.add_argument("--no-backup", action="store_true",
+                    help="do not create the write-once <file>.orig backup")
 
     pe = sub.add_parser("edit", help="open the graphical editor on a JPEG")
     pe.add_argument("image")
+    pe.add_argument("--no-backup", action="store_true",
+                    help="do not create the write-once <file>.orig backup")
     return p
 
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     # Bare `exiftagger.py IMAGE.jpg` -> GUI, without needing the 'edit' subcommand.
-    if argv and argv[0] not in ("vocab", "sync", "edit", "-h", "--help"):
+    if argv and argv[0] not in ("vocab", "sync", "edit",
+                                "-h", "--help", "-V", "--version"):
         argv = ["edit"] + argv
 
     args = build_parser().parse_args(argv)
@@ -1040,7 +1071,7 @@ def main(argv=None):
             print(f"File not found: {src}", file=sys.stderr)
             return EXIT_USAGE
         try:
-            return gui_main(args.image)
+            return gui_main(args.image, backup=not args.no_backup)
         except ImportError as e:
             print(f"PyQt6 not available: {e}\n"
                   "The 'vocab' and 'sync' actions work without PyQt6.",
