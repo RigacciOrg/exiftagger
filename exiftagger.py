@@ -698,6 +698,7 @@ def gui_main(image_path, backup=True):
             kw_label = QLabel("&Keywords (Xmp.dc.subject)")
             v.addWidget(kw_label)
             self.edit = QLineEdit(placeholderText="Type at least 3 characters…")
+            self.edit.setStyleSheet("QLineEdit{background:#ffffff;}")
             kw_label.setBuddy(self.edit)               # Alt+K
             self.edit.textEdited.connect(self._on_typed)
             self.edit.returnPressed.connect(self._commit_typed)
@@ -819,6 +820,9 @@ def gui_main(image_path, backup=True):
 
     # ---- main window ---------------------------------------------------------
     class MainWindow(QWidget):
+        CAPTION_NORMAL = "QTextEdit{background:#ffffff;}"
+        CAPTION_ANOMALY = "QTextEdit{background:#ffffff;border:2px solid #b00020;}"
+
         def __init__(self, path, backup=True):
             super().__init__()
             self.path = Path(path)
@@ -828,7 +832,10 @@ def gui_main(image_path, backup=True):
             self.setWindowTitle(f"{APP_NAME} — {self.path.name}")
 
             scr = QGuiApplication.primaryScreen().availableGeometry()
-            self.resize(int(scr.width() * 0.50), int(scr.height() * 0.65))
+            # 40% wide; height trimmed by two text lines, which comes off the
+            # long-description box (the flexible region that fills leftover space).
+            self.resize(int(scr.width() * 0.40),
+                        int(scr.height() * 0.65) - 2 * 26)
             # Center on the available screen area (excludes panels; handles offset).
             frame = self.frameGeometry()
             frame.moveCenter(scr.center())
@@ -858,6 +865,7 @@ def gui_main(image_path, backup=True):
             root.addWidget(cap_label)
             self.caption = QTextEdit()
             self.caption.setFixedHeight(3 * 26)
+            self.caption.setStyleSheet(self.CAPTION_NORMAL)
             self.caption.setPlainText(caption)
             self.caption.textChanged.connect(self._clear_anomaly)
             root.addWidget(self.caption)
@@ -896,6 +904,7 @@ def gui_main(image_path, backup=True):
             self.ext.setMinimumHeight(2 * 26)
             self.ext.setSizePolicy(QSizePolicy.Policy.Expanding,
                                    QSizePolicy.Policy.Expanding)
+            self.ext.setStyleSheet("QTextEdit{background:#ffffff;}")
             self.ext.setPlainText(self._initial["ext"])
             root.addWidget(self.ext, 1)
             ld_label.setBuddy(self.ext)                # Alt+L
@@ -920,13 +929,13 @@ def gui_main(image_path, backup=True):
             if dec["anomalies"]:
                 self._show_anomaly(" ".join(dec["anomalies"]))
 
-        # anomaly marker on the caption box
+        # anomaly marker on the caption box (white background in both states)
         def _show_anomaly(self, msg):
-            self.caption.setStyleSheet("QTextEdit{border:2px solid #b00020;}")
+            self.caption.setStyleSheet(self.CAPTION_ANOMALY)
             self.warn.setText("\u26a0 " + msg)
 
         def _clear_anomaly(self):
-            self.caption.setStyleSheet("")
+            self.caption.setStyleSheet(self.CAPTION_NORMAL)
             self.warn.setText("")
 
         def _on_inc8_toggled(self, *_):
