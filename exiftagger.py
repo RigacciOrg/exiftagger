@@ -42,6 +42,12 @@ __version__ = "0.1.0"
 APP_NAME = "exiftagger"
 EXIV2 = os.environ.get("EXIV2_COMMAND", "exiv2")
 
+
+def exiv2_available():
+    """True if the exiv2 command can be found (honours $EXIV2_COMMAND, which may
+    be a bare name on PATH or an absolute path)."""
+    return shutil.which(EXIV2) is not None
+
 # Exit codes (useful when spawned from a picture browser):
 EXIT_SAVED = 0          # OK pressed and something changed -> written
 EXIT_ERROR = 1          # exiv2 / I/O error
@@ -100,7 +106,10 @@ def exiv2_run(args, path):
     with out/err as bytes."""
     argv = [os.fsencode(EXIV2)] + [a if isinstance(a, bytes) else a.encode("utf-8")
                                    for a in args] + [os.fsencode(path)]
-    r = subprocess.run(argv, capture_output=True)
+    try:
+        r = subprocess.run(argv, capture_output=True)
+    except FileNotFoundError:
+        return 127, b"", b"exiv2 command not found"
     return r.returncode, r.stdout, r.stderr
 
 
@@ -476,7 +485,10 @@ def write_metadata(path, caption, keywords, ext_descr, backup=True):
     for c in cmds:
         argv += [b"-M", c.encode("utf-8")]
     argv.append(os.fsencode(path))
-    r = subprocess.run(argv, capture_output=True)
+    try:
+        r = subprocess.run(argv, capture_output=True)
+    except FileNotFoundError:
+        return False, f"exiv2 command not found: {EXIV2}"
     return r.returncode == 0, r.stderr.decode("utf-8", "replace").strip()
 
 
@@ -1060,6 +1072,14 @@ def main(argv=None):
         argv = ["edit"] + argv
 
     args = build_parser().parse_args(argv)
+
+    # Every command relies on the external exiv2; fail early with a clear message
+    # rather than producing empty reads or a mid-run error.
+    if args.command in ("vocab", "sync", "edit") and not exiv2_available():
+        print(f"exiv2 command not found: {EXIV2}\n"
+              "Install exiv2 (e.g. 'sudo apt install exiv2'), or set "
+              "$EXIV2_COMMAND to its path.", file=sys.stderr)
+        return EXIT_ERROR
 
     if args.command == "vocab":
         return cli_build_vocab(args)
