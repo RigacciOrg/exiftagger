@@ -1,17 +1,30 @@
 # ExifTagger
 
-ExifTagger is a lightweight graphical tool whose sole purpose is to add three
-kinds of metadata to a single JPEG image: a brief **caption** (useful, for
-example, as a slideshow title), a list of **keywords**, and a **long
-description** (for classifying and searching an image collection). Because it
-edits one image at a time, taking the file name as its argument, it works as a
-generic external editor or plugin for image browsers such as Geeqie. The three
-fields are stored in well-known EXIF and XMP tags, so they stay accessible to
-other software. Keywords are cached in a local vocabulary, making it easy to
-reuse the same terms consistently across a whole archive. All reading and
-writing of metadata is delegated to exiv2, a mature and proven-reliable library.
-Written in Python with Qt (PyQt6), ExifTagger is particularly at home on
-GNU/Linux, yet portable to other operating systems.
+ExifTagger is a lightweight graphical tool whose main purpose is
+to add three kinds of metadata to a JPEG image: a brief
+**caption** (useful, for example, as a slideshow title), a list
+of **keywords**, and a **long description** (useful for
+classifying and searching an image collection).
+
+ExifTagger processes one image at a time, taking the image
+filename as a command-line argument. This makes it suitable as
+an external editor or plugin for image browsers (such as Geeqie
+or gThumb).
+
+ExifTagger is designed to complement image management software,
+providing a focused metadata-editing tool rather than attempting to
+replace a full-featured image organizer.
+
+The three fields are stored in well-known EXIF and XMP tags,
+ensuring they remain accessible to other software. Keywords are
+also cached in a personal keyword vocabulary, making it easy to
+reuse terms consistently throughout an image archive.
+
+All metadata reading and writing is handled by **exiv2**, a
+mature and reliable command-line tool. Written in Python with Qt
+(PyQt6), ExifTagger is primarily intended for GNU/Linux, but can
+also run on other operating systems where Python, PyQt6, and
+exiv2 are available.
 
 ## Features
 
