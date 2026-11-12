@@ -1,19 +1,17 @@
 # ExifTagger
 
-Tag and caption JPEG photos through their EXIF/XMP metadata. A PyQt6 editor for
-one image: a short caption synced across EXIF UserComment, ImageDescription and
-XMP dc:description; keyword chips (XMP dc:Subject) backed by a local vocabulary;
-and a long accessibility description. Plus Qt-free CLI actions, usable over SSH.
-Built on exiv2.
-
-## Rationale
-
-Photo archives rely on a handful of key metadata fields, but general-purpose
-editors bury them under dozens of tags. ExifTagger focuses on just the three
-things a cataloguer actually edits per image — a short caption, a keyword list,
-and a long (accessibility) description — behind one small, fast window. It reads
-and writes standard EXIF/XMP tags through `exiv2`, so the results stay
-interoperable with other tools.
+ExifTagger is a lightweight graphical tool whose sole purpose is to add three
+kinds of metadata to a single JPEG image: a brief **caption** (useful, for
+example, as a slideshow title), a list of **keywords**, and a **long
+description** (for classifying and searching an image collection). Because it
+edits one image at a time, taking the file name as its argument, it works as a
+generic external editor or plugin for image browsers such as Geeqie. The three
+fields are stored in well-known EXIF and XMP tags, so they stay accessible to
+other software. Keywords are cached in a local vocabulary, making it easy to
+reuse the same terms consistently across a whole archive. All reading and
+writing of metadata is delegated to exiv2, a mature and proven-reliable library.
+Written in Python with Qt (PyQt6), ExifTagger is particularly at home on
+GNU/Linux, yet portable to other operating systems.
 
 ## Features
 
@@ -30,12 +28,17 @@ interoperable with other tools.
   flagging of malformed fields.
 - **Local keyword vocabulary** with accent- and case-insensitive search
   (Unicode NFC/NFKD keys) that grows as you tag.
+- **Robust handling of damaged metadata**: an invalid UserComment or a corrupt
+  XMP packet is flagged in the interface (red border and a warning) instead of
+  being silently lost, and unreadable files are reported rather than ignored.
+  When such a problem is detected a write-once `<file>.orig` backup of the
+  untouched original is forced before saving; a backup can also be requested
+  explicitly with `--backup`, so overwriting damaged data is always recoverable.
 - **Keyboard-friendly**: Alt-key mnemonics for every field, arrow-key suggestion
   picking, Esc to cancel, and an unsaved-changes confirmation.
 - **Command-line actions** that do not import Qt, so they run over SSH on a
   headless host: build the vocabulary from a photo tree, and synchronise the
   three caption tags.
-- Leaving a field empty removes its tag on save.
 - **Free and Open Source Software** (GPL-3.0-or-later): a single lightweight
   Python script with no heavy dependencies beyond Qt and exiv2.
 
@@ -43,7 +46,8 @@ interoperable with other tools.
 
 - **Python 3** (3.8 or newer).
 - **PyQt6** — needed only for the graphical editor; the CLI actions run without it.
-- **exiv2** 0.28 — the external command used to read and write the metadata.
+- **exiv2** — the external command used to read and write the metadata; tested
+  against versions 0.27 and 0.28.
 
 Install on common distributions:
 
@@ -68,12 +72,18 @@ any platform where those are available.
 # Graphical editor on one image
 python3 exiftagger.py photo.jpg
 
+# Keep a write-once photo.jpg.orig backup before saving
+python3 exiftagger.py photo.jpg --backup
+
 # Build the keyword vocabulary from a directory tree (no Qt needed)
 python3 exiftagger.py vocab ~/Photos --dry-run
 python3 exiftagger.py vocab ~/Photos
 
 # Synchronise the three caption tags across a tree (no Qt needed)
 python3 exiftagger.py sync ~/Photos
+
+# ...synchronise, keeping an <file>.orig backup of each photo written
+python3 exiftagger.py sync ~/Photos --backup
 ```
 
 The vocabulary is stored at `~/.local/share/exiftagger/vocabulary.json`.

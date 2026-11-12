@@ -37,7 +37,7 @@ __author__ = "Niccolo Rigacci"
 __copyright__ = "Copyright 2026 Niccolo Rigacci <niccolo@rigacci.org>"
 __license__ = "GPLv3-or-later"
 __email__ = "niccolo@rigacci.org"
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 APP_NAME = "exiftagger"
 EXIV2 = os.environ.get("EXIV2_COMMAND", "exiv2")
@@ -102,6 +102,10 @@ def clean_field(s):
 # exiv2 read helpers
 # ---------------------------------------------------------------------------
 
+class Exiv2ReadError(Exception):
+    """exiv2 failed to read a file (a genuine file error, not an absent tag)."""
+
+
 def exiv2_run(args, path):
     """Run exiv2 with byte argv (locale-independent). Returns (rc, out, err)
     with out/err as bytes."""
@@ -114,21 +118,41 @@ def exiv2_run(args, path):
     return r.returncode, r.stdout, r.stderr
 
 
+def exiv2_read(args, path):
+    """A read-only exiv2 call. Returns (rc, out) and raises Exiv2ReadError on a
+    genuine read failure.
+
+    Access errors (missing file, no read permission, a directory) are detected
+    first by Python itself -- deterministic and not dependent on exiv2's exit
+    code / stderr. For a readable file, exiv2 is then trusted to report an
+    unparseable image: the distinguisher there is stderr, not the exit code
+    (an absent key or packet exits non-zero with EMPTY stderr, which is normal,
+    while a corrupt file exits non-zero WITH a diagnostic on stderr)."""
+    try:
+        with open(path, "rb") as f:
+            f.read(1)
+    except OSError as e:
+        raise Exiv2ReadError(str(e))
+    rc, out, err = exiv2_run(args, path)
+    if rc != 0 and err.strip():
+        raise Exiv2ReadError(err.decode("utf-8", "replace").strip())
+    return rc, out
+
+
 def read_exif_value(path, key):
-    """`exiv2 -K <key> -PEv` -> plain (vanilla) value as str, or None if absent."""
-    rc, out, _ = exiv2_run(["-K", key, "-PEv"], path)
-    if rc != 0:
-        return None
+    """`exiv2 -K <key> -PEv` -> plain (vanilla) value as str, or None if absent.
+    Raises Exiv2ReadError on a genuine read failure."""
+    rc, out = exiv2_read(["-K", key, "-PEv"], path)
     text = out.decode("utf-8", "replace").rstrip("\n")
     return text if text else None
 
 
 def read_usercomment_hex(path):
-    """`exiv2 -K Exif.Photo.UserComment -PEh` parsed into raw bytes, or None."""
-    rc, out, _ = exiv2_run(["-K", "Exif.Photo.UserComment", "-PEh"], path)
-    if rc != 0:
-        return None
-    return parse_hexdump(out.decode("latin-1"))
+    """`exiv2 -K Exif.Photo.UserComment -PEh` parsed into raw bytes, or None if
+    absent. Raises Exiv2ReadError on a genuine read failure."""
+    rc, out = exiv2_read(["-K", "Exif.Photo.UserComment", "-PEh"], path)
+    data = parse_hexdump(out.decode("latin-1"))
+    return data if data else None
 
 
 def parse_hexdump(text):
@@ -158,14 +182,19 @@ _NS = {
 
 
 def read_xmp(path):
-    """`exiv2 -pX` -> dict(dc_description, ext_descr, subjects list)."""
-    rc, out, _ = exiv2_run(["-pX"], path)
-    result = {"dc_description": "", "ext_descr": "", "subjects": []}
+    """`exiv2 -pX` -> dict(dc_description, ext_descr, subjects, xmp_error).
+    xmp_error is None when the packet is absent/empty or parses cleanly, and a
+    message string when a non-empty packet is invalid XML (damaged metadata) --
+    so a corrupt packet is distinguished from a simply missing one."""
+    rc, out = exiv2_read(["-pX"], path)
+    result = {"dc_description": "", "ext_descr": "", "subjects": [],
+              "xmp_error": None}
     if rc != 0 or not out.strip():
         return result
     try:
         root = ET.fromstring(out)
-    except ET.ParseError:
+    except ET.ParseError as e:
+        result["xmp_error"] = str(e)
         return result
 
     def alt_default(el):
@@ -331,19 +360,23 @@ def alt_decodings(raw, include8):
 # Caption read precedence
 # ---------------------------------------------------------------------------
 
-def read_caption(path):
-    """First non-empty of UserComment -> ImageDescription -> dc.description."""
-    raw = read_usercomment_hex(path)
-    dec = decode_usercomment(raw)
+def caption_from(dec, xmp, path):
+    """Caption precedence from an already-read UserComment decode dict and XMP
+    dict: UserComment -> ImageDescription -> dc.description (first non-empty)."""
     if dec["text"].strip():
         return dec["text"]
     img = read_exif_value(path, "Exif.Image.ImageDescription")
     if img and img.strip():
         return clean_field(img)
-    xmp = read_xmp(path)
     if xmp["dc_description"].strip():
         return clean_field(xmp["dc_description"])
     return ""
+
+
+def read_caption(path):
+    """First non-empty of UserComment -> ImageDescription -> dc.description."""
+    dec = decode_usercomment(read_usercomment_hex(path))
+    return caption_from(dec, read_xmp(path), path)
 
 
 # ---------------------------------------------------------------------------
@@ -481,16 +514,18 @@ def make_original_backup(path):
         shutil.copy2(path, orig)
         return True, ""
     except OSError as e:
-        return False, f"could not create backup {orig}: {e}"
+        return False, str(e)
 
 
 def write_metadata(path, caption, keywords, ext_descr, backup=True):
     """Write in place. With backup=True, a write-once <path>.orig copy is made
-    first; if that fails the write is aborted. Returns (ok, stderr_text)."""
+    first; if that fails the write is aborted. Returns (ok, msg) where msg is a
+    complete, self-describing error (distinguishing a backup failure from an
+    exiv2 write failure) and "" on success."""
     if backup:
         ok, err = make_original_backup(path)
         if not ok:
-            return False, err
+            return False, "Backup failed: " + err
     cmds = build_write_commands(caption, keywords, ext_descr)
     argv = [os.fsencode(EXIV2), b"-n", b"UTF-8"]
     for c in cmds:
@@ -500,7 +535,10 @@ def write_metadata(path, caption, keywords, ext_descr, backup=True):
         r = subprocess.run(argv, capture_output=True)
     except FileNotFoundError:
         return False, f"exiv2 command not found: {EXIV2}"
-    return r.returncode == 0, r.stderr.decode("utf-8", "replace").strip()
+    if r.returncode != 0:
+        err = r.stderr.decode("utf-8", "replace").strip()
+        return False, "exiv2 write failed: " + (err or f"exit code {r.returncode}")
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +568,12 @@ def cli_build_vocab(args):
     scanned = 0
     for jpg in iter_jpegs(root):
         scanned += 1
-        for subj in read_xmp(jpg)["subjects"]:
+        try:
+            subjects = read_xmp(jpg)["subjects"]
+        except Exiv2ReadError as e:
+            print(f"  ERROR    {jpg}: read failed: {e}", file=sys.stderr)
+            continue
+        for subj in subjects:
             disp = unicodedata.normalize("NFC", collapse_spaces(subj))
             if disp:
                 groups[search_key(disp)][disp] += 1
@@ -583,16 +626,26 @@ def cli_sync(args):
         return EXIT_USAGE
     errors = 0
     for jpg in iter_jpegs(root):
-        caption = read_caption(jpg)
+        try:
+            dec = decode_usercomment(read_usercomment_hex(jpg))
+            xmp = read_xmp(jpg)
+            caption = caption_from(dec, xmp, jpg)
+        except Exiv2ReadError as e:
+            errors += 1
+            print(f"  ERROR    {jpg}: read failed: {e}", file=sys.stderr)
+            continue
         if not caption:
             print(f"  (empty)  {jpg}")
             continue
-        xmp = read_xmp(jpg)
+        # Force a backup when the existing metadata looks damaged (any
+        # UserComment anomaly or an invalid XMP packet), so the suspect original
+        # is preserved even without --backup.
+        damaged = bool(dec["anomalies"]) or bool(xmp["xmp_error"])
         keywords = [unicodedata.normalize("NFC", collapse_spaces(s))
                     for s in xmp["subjects"]]
         ext = clean_field(xmp["ext_descr"])
         ok, err = write_metadata(jpg, caption, keywords, ext,
-                                 backup=not args.no_backup)
+                                 backup=args.backup or damaged)
         if ok:
             print(f"  sync     {jpg}")
         else:
@@ -860,6 +913,10 @@ def gui_main(image_path, backup=True):
     class MainWindow(QWidget):
         CAPTION_NORMAL = "QTextEdit{background:#ffffff;}"
         CAPTION_ANOMALY = "QTextEdit{background:#ffffff;border:2px solid #b00020;}"
+        # Shared tail for both anomaly warnings; truthful because any detected
+        # anomaly also forces the backup (see _force_backup).
+        SAVE_NOTE = ("Saving will overwrite it; a backup copy (.orig) "
+                     "will be kept.")
 
         def __init__(self, path, backup=True):
             super().__init__()
@@ -883,8 +940,12 @@ def gui_main(image_path, backup=True):
             self.raw = read_usercomment_hex(self.path)
             dec = decode_usercomment(self.raw)
             xmp = read_xmp(self.path)
-            caption = (dec["text"].strip()
-                       and dec["text"]) or read_caption(self.path)
+            caption = caption_from(dec, xmp, self.path)
+            self._xmp_error = xmp["xmp_error"]
+            # Latch a forced backup when anything looked damaged at load (any
+            # UserComment anomaly or an invalid XMP packet), so the suspect
+            # original is preserved regardless of later edits in the UI.
+            self._force_backup = bool(dec["anomalies"]) or bool(xmp["xmp_error"])
             self._initial = {
                 "caption": caption,
                 "keywords": [unicodedata.normalize("NFC", collapse_spaces(s))
@@ -905,7 +966,6 @@ def gui_main(image_path, backup=True):
             self.caption.setFixedHeight(3 * 26)
             self.caption.setStyleSheet(self.CAPTION_NORMAL)
             self.caption.setPlainText(caption)
-            self.caption.textChanged.connect(self._clear_anomaly)
             root.addWidget(self.caption)
             cap_label.setBuddy(self.caption)            # Alt+A
 
@@ -949,6 +1009,12 @@ def gui_main(image_path, backup=True):
             # Chips tab in visual order, then into the long-description box.
             self.kw.set_successor(self.ext)
 
+            # warning banner for damaged XMP (affects keywords + long description)
+            self.xmp_warn = QLabel("")
+            self.xmp_warn.setStyleSheet("color:#b00020;")
+            self.xmp_warn.setWordWrap(True)
+            root.addWidget(self.xmp_warn)
+
             # buttons
             btns = QHBoxLayout()
             btns.addStretch(1)
@@ -967,16 +1033,28 @@ def gui_main(image_path, backup=True):
             self.inc8.blockSignals(False)
             self._rebuild_combo(select=dec["auto_codec"])
             if dec["anomalies"]:
-                self._show_anomaly(" ".join(dec["anomalies"]))
+                self._show_anomaly(" ".join(dec["anomalies"]) + " " + self.SAVE_NOTE)
+            if self._xmp_error:
+                self._show_xmp_error(self._xmp_error)
 
         # anomaly marker on the caption box (white background in both states)
         def _show_anomaly(self, msg):
             self.caption.setStyleSheet(self.CAPTION_ANOMALY)
             self.warn.setText("\u26a0 " + msg)
 
-        def _clear_anomaly(self):
-            self.caption.setStyleSheet(self.CAPTION_NORMAL)
-            self.warn.setText("")
+        # damaged-XMP marker: red-border the two XMP-derived fields (the keyword
+        # input and the long-description box) and warn that saving overwrites the
+        # unreadable data (a backup is forced on). Like the caption anomaly, this
+        # stays on for the session -- it describes the stored data, not the edits.
+        def _show_xmp_error(self, msg):
+            self.ext.setStyleSheet(
+                "QTextEdit{background:#ffffff;border:2px solid #b00020;}")
+            self.kw.edit.setStyleSheet(
+                "QLineEdit{background:#ffffff;border:2px solid #b00020;}")
+            self.xmp_warn.setText(
+                "\u26a0 Existing XMP metadata is damaged (invalid XML) and could "
+                f"not be read ({msg}). Keywords and long description are shown "
+                "empty. " + self.SAVE_NOTE)
 
         def _on_inc8_toggled(self, *_):
             # Keep the chosen codec, re-decode over the new byte range, and
@@ -998,9 +1076,10 @@ def gui_main(image_path, backup=True):
                 self._apply_decoding(idx)
 
         def _apply_decoding(self, i):
+            # Changing the decoding updates the text but keeps any anomaly flag:
+            # the stored UserComment was malformed regardless of how it's shown.
             if 0 <= i < len(self._decodings):
                 self.caption.setPlainText(self._decodings[i][2])
-                self._clear_anomaly()
 
         # dirty check shared by accept / reject / closeEvent
         def _is_dirty(self):
@@ -1031,9 +1110,9 @@ def gui_main(image_path, backup=True):
                 self.close()
                 return
             ok, err = write_metadata(self.path, caption, keywords, ext,
-                                     backup=self.backup)
+                                     backup=self.backup or self._force_backup)
             if not ok:
-                self._show_anomaly("exiv2 write failed: " + err)
+                self._show_anomaly(err)   # err is self-describing (backup vs write)
                 return
             # vocabulary write-back: every keyword used becomes known
             for k in keywords:
@@ -1074,7 +1153,15 @@ def gui_main(image_path, backup=True):
             super().keyPressEvent(event)
 
     app = QApplication(sys.argv[:1])
-    win = MainWindow(image_path, backup=backup)
+    try:
+        win = MainWindow(image_path, backup=backup)
+    except Exiv2ReadError as e:
+        # exiv2 could not read the file (permission, not a JPEG, corrupt): abort
+        # with a dialog rather than opening an editor on unreadable data.
+        QMessageBox.critical(None, "Read error",
+                             f"exiv2 could not read:\n{image_path}\n\n{e}")
+        print(f"exiv2 read failed: {e}", file=sys.stderr)
+        return EXIT_ERROR
     win.show()
     app.exec()
     # Report whether a write happened on stdout (for a spawning picture browser);
@@ -1106,13 +1193,15 @@ def build_parser():
         help="sync Exif.Photo.UserComment / Exif.Image.ImageDescription / "
              "Xmp.dc.description")
     ps.add_argument("directory")
-    ps.add_argument("--no-backup", action="store_true",
-                    help="do not create the write-once <file>.orig backup")
+    ps.add_argument("--backup", action="store_true",
+                    help="keep a write-once <file>.orig backup (forced on anyway "
+                         "when damaged EXIF/XMP metadata is detected)")
 
     pe = sub.add_parser("edit", help="open the graphical editor on a JPEG")
     pe.add_argument("image")
-    pe.add_argument("--no-backup", action="store_true",
-                    help="do not create the write-once <file>.orig backup")
+    pe.add_argument("--backup", action="store_true",
+                    help="keep a write-once <file>.orig backup (forced on anyway "
+                         "when damaged EXIF/XMP metadata is detected)")
     return p
 
 
@@ -1143,7 +1232,7 @@ def main(argv=None):
             print(f"File not found: {src}", file=sys.stderr)
             return EXIT_USAGE
         try:
-            return gui_main(args.image, backup=not args.no_backup)
+            return gui_main(args.image, backup=args.backup)
         except ImportError as e:
             print(f"PyQt6 not available: {e}\n"
                   "The 'vocab' and 'sync' actions work without PyQt6.",
