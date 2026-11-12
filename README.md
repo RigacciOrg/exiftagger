@@ -61,18 +61,22 @@ exiv2 are available.
 - **PyQt6** — needed only for the graphical editor; the CLI actions run without it.
 - **exiv2** — the external command used to read and write the metadata; tested
   against versions 0.27 and 0.28.
+- **A clipboard helper** (optional) — `xclip` or `xsel` on X11, `wl-copy` on
+  Wayland. If present, text copied from the editor with Ctrl-C stays on the
+  clipboard after the window closes; without it, the editor still works and
+  exits cleanly, you just need to paste before closing.
 
 Install on common distributions:
 
 ```sh
 # Debian / Ubuntu
-sudo apt install exiv2 python3-pyqt6
+sudo apt install exiv2 python3-pyqt6 xclip
 
 # Fedora
-sudo dnf install exiv2 python3-pyqt6
+sudo dnf install exiv2 python3-pyqt6 xclip
 
 # Arch Linux
-sudo pacman -S exiv2 python-pyqt6
+sudo pacman -S exiv2 python-pyqt6 xclip
 ```
 
 (or `pip install PyQt6` inside a virtualenv). ExifTagger targets **GNU/Linux**,
