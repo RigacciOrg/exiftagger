@@ -37,7 +37,7 @@ __author__ = "Niccolo Rigacci"
 __copyright__ = "Copyright 2026 Niccolo Rigacci <niccolo@rigacci.org>"
 __license__ = "GPLv3-or-later"
 __email__ = "niccolo@rigacci.org"
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 APP_NAME = "exiftagger"
 EXIV2 = os.environ.get("EXIV2_COMMAND", "exiv2")
@@ -966,25 +966,48 @@ def gui_main(image_path, backup=True):
             root.addWidget(self.caption)
             cap_label.setBuddy(self.caption)            # Alt+A
 
-            row = QHBoxLayout()
+            # Decoding row: on the left, the "UserComment decoding:" label + combo
+            # with the anomaly warning beneath it; on the right, a borderless frame
+            # stacking the two option checkboxes, top-aligned so "Include first 8
+            # bytes" sits level with the combo and "Backup image" below it.
+            dec_row = QHBoxLayout()
+
+            left_col = QVBoxLayout()
+            top_line = QHBoxLayout()
             self.combo = QComboBox()
             self.combo.currentIndexChanged.connect(self._apply_decoding)
             uc_label = tagged_label("&UserComment decoding:",
                                     "Exif.Photo.UserComment")
             uc_label.setBuddy(self.combo)              # Alt+U
-            row.addWidget(uc_label)
-            row.addWidget(self.combo, 1)
+            top_line.addWidget(uc_label)
+            top_line.addWidget(self.combo, 1)
+            left_col.addLayout(top_line)
+            self.warn = QLabel("")                     # UserComment anomaly, under combo
+            self.warn.setStyleSheet("color:#b00020;")
+            self.warn.setWordWrap(True)
+            left_col.addWidget(self.warn)
+            dec_row.addLayout(left_col, 1)
+
+            opt_frame = QFrame()                       # borderless options cluster
+            opt_v = QVBoxLayout(opt_frame)
+            opt_v.setContentsMargins(0, 0, 0, 0)
             self.inc8 = QCheckBox("&Include first 8 bytes")   # Alt+I toggles
             self.inc8.setToolTip("Include the EXIF 8-byte charset prefix in the "
                                  "decoded text")
             self.inc8.stateChanged.connect(self._on_inc8_toggled)
-            row.addWidget(self.inc8)
-            root.addLayout(row)
+            opt_v.addWidget(self.inc8)
+            self.backup_cb = QCheckBox("&Backup image")       # Alt+B
+            self.backup_cb.setToolTip("Create an .orig backup copy of the original "
+                                      "image before saving, unless it already exists.")
+            # Forced on (checked + locked) by --backup or detected damage; otherwise
+            # an opt-in the user may tick to request a backup for this save.
+            forced = self.backup or self._force_backup
+            self.backup_cb.setChecked(forced)
+            self.backup_cb.setEnabled(not forced)
+            opt_v.addWidget(self.backup_cb)
+            dec_row.addWidget(opt_frame, 0, Qt.AlignmentFlag.AlignTop)
 
-            self.warn = QLabel("")
-            self.warn.setStyleSheet("color:#b00020;")
-            self.warn.setWordWrap(True)
-            root.addWidget(self.warn)
+            root.addLayout(dec_row)
 
             # keywords
             self.kw = KeywordEditor(self.vocab, self._initial["keywords"])
@@ -1107,7 +1130,7 @@ def gui_main(image_path, backup=True):
                 self.close()
                 return
             ok, err = write_metadata(self.path, caption, keywords, ext,
-                                     backup=self.backup or self._force_backup)
+                                     backup=self.backup_cb.isChecked())
             if not ok:
                 self._show_anomaly(err)   # err is self-describing (backup vs write)
                 return
