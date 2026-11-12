@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
@@ -37,7 +38,7 @@ __author__ = "Niccolo Rigacci"
 __copyright__ = "Copyright 2026 Niccolo Rigacci <niccolo@rigacci.org>"
 __license__ = "GPLv3-or-later"
 __email__ = "niccolo@rigacci.org"
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 APP_NAME = "exiftagger"
 EXIV2 = os.environ.get("EXIV2_COMMAND", "exiv2")
@@ -655,11 +656,42 @@ def cli_sync(args):
 # GUI (PyQt6 imported here only)
 # ---------------------------------------------------------------------------
 
+# Clipboard helpers, in preference order: (command, args, env requirement).
+_CLIPBOARD_HELPERS = [
+    ("wl-copy", [], "WAYLAND_DISPLAY"),                   # Wayland
+    ("xclip", ["-selection", "clipboard"], "DISPLAY"),   # X11
+    ("xsel", ["--clipboard", "--input"], "DISPLAY"),     # X11
+]
+
+
+def persist_clipboard_external(text):
+    """Hand `text` to a detached clipboard helper so it survives after the editor
+    exits. This works around a Qt bug where destroying the QApplication while it
+    owns the clipboard aborts the process during the clipboard-manager hand-off.
+    Best-effort: returns the helper used, or None if nothing suitable is found."""
+    if not text:
+        return None
+    for tool, args, env_var in _CLIPBOARD_HELPERS:
+        if not os.environ.get(env_var) or not shutil.which(tool):
+            continue
+        try:
+            p = subprocess.Popen([tool] + args, stdin=subprocess.PIPE,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL,
+                                 start_new_session=True)   # detach: survives our exit
+            p.stdin.write(text.encode("utf-8"))
+            p.stdin.close()
+        except OSError:
+            continue
+        return tool
+    return None
+
+
 def gui_main(image_path, backup=True):
     from PyQt6.QtCore import Qt, QPoint, QEvent
     from PyQt6.QtGui import QGuiApplication
     from PyQt6.QtWidgets import (
-        QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
+        QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit,
         QLineEdit, QComboBox, QCheckBox, QPushButton, QListWidget, QFrame,
         QSizePolicy, QLayout, QMessageBox,
     )
@@ -908,8 +940,8 @@ def gui_main(image_path, backup=True):
 
     # ---- main window ---------------------------------------------------------
     class MainWindow(QWidget):
-        CAPTION_NORMAL = "QTextEdit{background:#ffffff;}"
-        CAPTION_ANOMALY = "QTextEdit{background:#ffffff;border:2px solid #b00020;}"
+        CAPTION_NORMAL = "QPlainTextEdit{background:#ffffff;}"
+        CAPTION_ANOMALY = "QPlainTextEdit{background:#ffffff;border:2px solid #b00020;}"
         # Shared tail for both anomaly warnings; truthful because any detected
         # anomaly also forces the backup (see _force_backup).
         SAVE_NOTE = ("Saving will overwrite it; a backup copy (.orig) "
@@ -959,7 +991,7 @@ def gui_main(image_path, backup=True):
                 "Exif.Photo.UserComment · Exif.Image.ImageDescription · "
                 "Xmp.dc.description\n(read in this order; written to all three)")
             root.addWidget(cap_label)
-            self.caption = QTextEdit()
+            self.caption = QPlainTextEdit()
             self.caption.setFixedHeight(3 * 26)
             self.caption.setStyleSheet(self.CAPTION_NORMAL)
             self.caption.setPlainText(caption)
@@ -1016,13 +1048,13 @@ def gui_main(image_path, backup=True):
             # long description
             ld_label = QLabel("&Long description (Xmp.iptc.ExtDescrAccessibility)")
             root.addWidget(ld_label)
-            self.ext = QTextEdit()
+            self.ext = QPlainTextEdit()
             # Flexible region: absorbs extra height, and is the first to shrink
             # when the window gets shorter, so the chip area is never hidden.
             self.ext.setMinimumHeight(2 * 26)
             self.ext.setSizePolicy(QSizePolicy.Policy.Expanding,
                                    QSizePolicy.Policy.Expanding)
-            self.ext.setStyleSheet("QTextEdit{background:#ffffff;}")
+            self.ext.setStyleSheet("QPlainTextEdit{background:#ffffff;}")
             self.ext.setPlainText(self._initial["ext"])
             root.addWidget(self.ext, 1)
             ld_label.setBuddy(self.ext)                # Alt+L
@@ -1068,7 +1100,7 @@ def gui_main(image_path, backup=True):
         # stays on for the session -- it describes the stored data, not the edits.
         def _show_xmp_error(self, msg):
             self.ext.setStyleSheet(
-                "QTextEdit{background:#ffffff;border:2px solid #b00020;}")
+                "QPlainTextEdit{background:#ffffff;border:2px solid #b00020;}")
             self.kw.edit.setStyleSheet(
                 "QLineEdit{background:#ffffff;border:2px solid #b00020;}")
             self.xmp_warn.setText(
@@ -1184,10 +1216,21 @@ def gui_main(image_path, backup=True):
         return EXIT_ERROR
     win.show()
     app.exec()
+    saved = win.saved
+    # If the user copied text (we own the clipboard), hand it to a detached helper
+    # so it survives our exit: Qt's own exit hand-off aborts the process in some
+    # builds (SIGABRT, "Must construct a QGuiApplication before accessing
+    # QFontDatabase") because the QApplication destructor runs it after qApp is
+    # already gone. We then os._exit() to skip that destructor entirely.
+    cb = app.clipboard()
+    copied = cb.text() if cb.ownsClipboard() else ""
     # Report whether a write happened on stdout (for a spawning picture browser);
     # the exit code stays 0 for any clean close, save or cancel alike.
-    print("saved" if win.saved else "unchanged")
-    return EXIT_OK
+    print("saved" if saved else "unchanged")
+    sys.stdout.flush()
+    if persist_clipboard_external(copied):
+        time.sleep(0.2)   # let the helper take selection ownership before we exit
+    os._exit(EXIT_OK)
 
 
 # ---------------------------------------------------------------------------
