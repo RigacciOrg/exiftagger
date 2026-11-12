@@ -587,9 +587,10 @@ def cli_sync(args):
         if not caption:
             print(f"  (empty)  {jpg}")
             continue
+        xmp = read_xmp(jpg)
         keywords = [unicodedata.normalize("NFC", collapse_spaces(s))
-                    for s in read_xmp(jpg)["subjects"]]
-        ext = clean_field(read_xmp(jpg)["ext_descr"])
+                    for s in xmp["subjects"]]
+        ext = clean_field(xmp["ext_descr"])
         ok, err = write_metadata(jpg, caption, keywords, ext,
                                  backup=not args.no_backup)
         if ok:
