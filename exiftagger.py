@@ -113,8 +113,10 @@ def exiv2_run(args, path):
                                    for a in args] + [os.fsencode(path)]
     try:
         r = subprocess.run(argv, capture_output=True)
-    except FileNotFoundError:
-        return 127, b"", b"exiv2 command not found"
+    except OSError as e:
+        # Covers exiv2 missing (ENOENT), not executable (EACCES), a bad binary
+        # (ENOEXEC), a directory, too many -M args (E2BIG), resource limits, etc.
+        return 127, b"", f"cannot run exiv2 ({EXIV2}): {e}".encode("utf-8")
     return r.returncode, r.stdout, r.stderr
 
 
@@ -373,12 +375,6 @@ def caption_from(dec, xmp, path):
     return ""
 
 
-def read_caption(path):
-    """First non-empty of UserComment -> ImageDescription -> dc.description."""
-    dec = decode_usercomment(read_usercomment_hex(path))
-    return caption_from(dec, read_xmp(path), path)
-
-
 # ---------------------------------------------------------------------------
 # Vocabulary (JSON at $XDG_DATA_HOME/exiftagger/vocabulary.json)
 # ---------------------------------------------------------------------------
@@ -533,8 +529,9 @@ def write_metadata(path, caption, keywords, ext_descr, backup=True):
     argv.append(os.fsencode(path))
     try:
         r = subprocess.run(argv, capture_output=True)
-    except FileNotFoundError:
-        return False, f"exiv2 command not found: {EXIV2}"
+    except OSError as e:
+        # exiv2 missing / not executable / bad binary / too many -M args, etc.
+        return False, f"cannot run exiv2 ({EXIV2}): {e}"
     if r.returncode != 0:
         err = r.stderr.decode("utf-8", "replace").strip()
         return False, "exiv2 write failed: " + (err or f"exit code {r.returncode}")
