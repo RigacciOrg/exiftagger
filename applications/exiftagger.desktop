@@ -1,0 +1,21 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+
+Name=ExifTagger
+GenericName=JPEG Metadata Editor
+Comment=Edit EXIF and other metadata in JPEG images
+
+Exec=exiftagger.py %f
+TryExec=exiftagger.py
+
+Icon=exiftagger
+Terminal=false
+StartupNotify=true
+
+Categories=Graphics;Photography;
+
+MimeType=image/jpeg;
+
+# Geeqie integration
+X-Geeqie-Menu-Path=EditMenu/EditSection
