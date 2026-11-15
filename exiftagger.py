@@ -175,6 +175,58 @@ def parse_hexdump(text):
     return bytes(data)
 
 
+# Exif APP1 always sits among the first JPEG segments, so the byte-order scan
+# never needs to look past this bound. It also guarantees exif_byte_order() fails
+# fast on a corrupt or non-JPEG file instead of crawling the whole thing.
+_EXIF_SCAN_LIMIT = 1 << 20   # 1 MiB
+
+
+def exif_byte_order(path):
+    """Read the Exif/TIFF byte-order marker from a JPEG: 'II' (Intel, little-
+    endian), 'MM' (Motorola, big-endian), or None if there is no Exif block or it
+    cannot be read. Walks the JPEG marker segments by seeking past each payload
+    (no full-file load), tolerates fill bytes (runs of 0xFF before a marker), and
+    is strictly bounded: it stops at the first SOS, on any misalignment, or at
+    _EXIF_SCAN_LIMIT -- so a corrupt file can never make it scan to EOF. Used to
+    decode a BOM-less UTF-16 UserComment in the container's byte order (the case
+    some cameras, e.g. GoPro, produce)."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(2) != b"\xff\xd8":         # SOI: not a JPEG
+                return None
+            while f.tell() < _EXIF_SCAN_LIMIT:
+                byte = f.read(1)
+                if byte != b"\xff":              # EOF (b"") or not on a marker ->
+                    return None                  # malformed; fail fast, no scan
+                code = f.read(1)
+                while code == b"\xff" and f.tell() < _EXIF_SCAN_LIMIT:
+                    code = f.read(1)             # skip fill bytes before the marker
+                if not code or code == b"\xff":
+                    return None
+                m = code[0]
+                if m == 0x00 or m == 0xD9 or m == 0xDA:   # stuffing / EOI / SOS
+                    return None
+                if 0xD0 <= m <= 0xD7 or m == 0x01:        # RSTn / TEM: no length
+                    continue
+                lenbytes = f.read(2)
+                if len(lenbytes) < 2:
+                    return None
+                payload_len = ((lenbytes[0] << 8) | lenbytes[1]) - 2
+                if payload_len < 0:
+                    return None
+                if m == 0xE1:                     # APP1: Exif or XMP
+                    head = f.read(min(8, payload_len))
+                    if head[:6] == b"Exif\x00\x00":
+                        bo = head[6:8]
+                        return bo.decode("ascii") if bo in (b"II", b"MM") else None
+                    f.seek(payload_len - len(head), 1)   # not Exif (e.g. XMP): skip
+                else:
+                    f.seek(payload_len, 1)        # skip this segment's payload
+            return None
+    except OSError:
+        return None
+
+
 # XMP namespaces used in the packet produced by `exiv2 -pX`.
 _NS = {
     "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
@@ -262,12 +314,16 @@ def _strict_decodes(b, codec):
         return False
 
 
-def decode_usercomment(raw):
+def decode_usercomment(raw, container_order=None):
     """Decode UserComment honouring the EXIF prefix; return a dict:
         text        -> initial text to show (sanitised)
         anomalies   -> list[str] of reasons to flag (red border)
         include8    -> whether the first 8 bytes should be treated as content
         auto_codec  -> codec key to pre-select in the combo
+
+    container_order is the file's Exif/TIFF byte order ('II', 'MM', or None from
+    exif_byte_order()); it sets the default endianness for a BOM-less UTF-16
+    UserComment.
     """
     anomalies = []
     # Absent or empty UserComment is the normal "no caption" state (cameras ship
@@ -285,7 +341,9 @@ def decode_usercomment(raw):
     prefix, payload = raw[:8], raw[8:]
 
     if prefix == PFX_UNICODE:
-        codec = "utf-16-le"                 # default Intel unless a BOM says otherwise
+        # Endianness priority: a BOM in the payload wins; otherwise follow the
+        # Exif/TIFF container order (II -> LE, MM -> BE); otherwise default to LE.
+        codec = "utf-16-be" if container_order == "MM" else "utf-16-le"
         if payload[:2] == b"\xff\xfe":
             codec, payload = "utf-16-le", payload[2:]
         elif payload[:2] == b"\xfe\xff":
@@ -625,7 +683,8 @@ def cli_sync(args):
     errors = 0
     for jpg in iter_jpegs(root):
         try:
-            dec = decode_usercomment(read_usercomment_hex(jpg))
+            dec = decode_usercomment(read_usercomment_hex(jpg),
+                                     exif_byte_order(jpg))
             xmp = read_xmp(jpg)
             caption = caption_from(dec, xmp, jpg)
         except Exiv2ReadError as e:
@@ -967,7 +1026,7 @@ def gui_main(image_path, backup=True):
 
             # read current state
             self.raw = read_usercomment_hex(self.path)
-            dec = decode_usercomment(self.raw)
+            dec = decode_usercomment(self.raw, exif_byte_order(self.path))
             xmp = read_xmp(self.path)
             caption = caption_from(dec, xmp, self.path)
             self._xmp_error = xmp["xmp_error"]
