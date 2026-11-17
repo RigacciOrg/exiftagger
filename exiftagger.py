@@ -38,7 +38,7 @@ __author__ = "Niccolo Rigacci"
 __copyright__ = "Copyright 2026 Niccolo Rigacci <niccolo@rigacci.org>"
 __license__ = "GPLv3-or-later"
 __email__ = "niccolo@rigacci.org"
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 APP_NAME = "exiftagger"
 EXIV2 = os.environ.get("EXIV2_COMMAND", "exiv2")
@@ -334,9 +334,6 @@ def decode_usercomment(raw, container_order=None):
     if raw is None or len(raw) == 0:
         return {"text": "", "anomalies": [], "include8": False,
                 "auto_codec": None}
-
-    if len(raw) >= 1000:
-        anomalies.append("Field of 1000 bytes or more.")
 
     prefix, payload = raw[:8], raw[8:]
 
@@ -999,8 +996,9 @@ def gui_main(image_path, backup=True):
 
     # ---- main window ---------------------------------------------------------
     class MainWindow(QWidget):
-        CAPTION_NORMAL = "QPlainTextEdit{background:#ffffff;}"
-        CAPTION_ANOMALY = "QPlainTextEdit{background:#ffffff;border:2px solid #b00020;}"
+        CAPTION_NORMAL = "QPlainTextEdit{background:#ffffff; font-size:18px;}"
+        CAPTION_ANOMALY = ("QPlainTextEdit{background:#ffffff; font-size:18px;"
+                           "border:2px solid #b00020;}")
         # Shared tail for both anomaly warnings; truthful because any detected
         # anomaly also forces the backup (see _force_backup).
         SAVE_NOTE = ("Saving will overwrite it; a backup copy (.orig) "
@@ -1051,8 +1049,12 @@ def gui_main(image_path, backup=True):
                 "Xmp.dc.description\n(read in this order; written to all three)")
             root.addWidget(cap_label)
             self.caption = QPlainTextEdit()
-            self.caption.setFixedHeight(3 * 26)
             self.caption.setStyleSheet(self.CAPTION_NORMAL)
+            # Height follows the (stylesheet) font: ensurePolished() applies the
+            # font-size so fontMetrics() reflects it before we size 3 rows.
+            self.caption.ensurePolished()
+            lh = self.caption.fontMetrics().lineSpacing()
+            self.caption.setFixedHeight(3 * lh + 12)
             self.caption.setPlainText(caption)
             root.addWidget(self.caption)
             cap_label.setBuddy(self.caption)            # Alt+A
