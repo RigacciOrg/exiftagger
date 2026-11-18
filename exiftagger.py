@@ -38,7 +38,7 @@ __author__ = "Niccolo Rigacci"
 __copyright__ = "Copyright 2026 Niccolo Rigacci <niccolo@rigacci.org>"
 __license__ = "GPLv3-or-later"
 __email__ = "niccolo@rigacci.org"
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 APP_NAME = "exiftagger"
 EXIV2 = os.environ.get("EXIV2_COMMAND", "exiv2")
@@ -178,7 +178,7 @@ def parse_hexdump(text):
 # Exif APP1 always sits among the first JPEG segments, so the byte-order scan
 # never needs to look past this bound. It also guarantees exif_byte_order() fails
 # fast on a corrupt or non-JPEG file instead of crawling the whole thing.
-_EXIF_SCAN_LIMIT = 1 << 20   # 1 MiB
+_EXIF_SCAN_LIMIT = 256 * 1024  # 256 KiB
 
 
 def exif_byte_order(path):
@@ -186,21 +186,36 @@ def exif_byte_order(path):
     endian), 'MM' (Motorola, big-endian), or None if there is no Exif block or it
     cannot be read. Walks the JPEG marker segments by seeking past each payload
     (no full-file load), tolerates fill bytes (runs of 0xFF before a marker), and
-    is strictly bounded: it stops at the first SOS, on any misalignment, or at
-    _EXIF_SCAN_LIMIT -- so a corrupt file can never make it scan to EOF. Used to
+    is strictly bounded: no read or seek can cross _EXIF_SCAN_LIMIT. Used to
     decode a BOM-less UTF-16 UserComment in the container's byte order (the case
     some cameras, e.g. GoPro, produce)."""
     try:
         with open(path, "rb") as f:
-            if f.read(2) != b"\xff\xd8":         # SOI: not a JPEG
+
+            def read_bounded(n):
+                """Read n bytes only if the scan limit will not be exceeded;
+                return b"" if it would, which the callers treat like a short read
+                at EOF (-> return None), so no caller ever sees a None here."""
+                if f.tell() + n > _EXIF_SCAN_LIMIT:
+                    return b""
+                return f.read(n)
+
+            def seek_bounded(n):
+                """Seek forward only if the scan limit will not be exceeded."""
+                if f.tell() + n > _EXIF_SCAN_LIMIT:
+                    return False
+                f.seek(n, 1)
+                return True
+
+            if read_bounded(2) != b"\xff\xd8":  # Not SOI (JPEG Start Of Image)
                 return None
             while f.tell() < _EXIF_SCAN_LIMIT:
-                byte = f.read(1)
-                if byte != b"\xff":              # EOF (b"") or not on a marker ->
-                    return None                  # malformed; fail fast, no scan
-                code = f.read(1)
+                byte = read_bounded(1)
+                if byte != b"\xff":             # EOF (b"") or not on a marker ->
+                    return None                 # malformed; fail fast, no scan
+                code = read_bounded(1)
                 while code == b"\xff" and f.tell() < _EXIF_SCAN_LIMIT:
-                    code = f.read(1)             # skip fill bytes before the marker
+                    code = read_bounded(1)      # skip fill bytes before the marker
                 if not code or code == b"\xff":
                     return None
                 m = code[0]
@@ -208,20 +223,24 @@ def exif_byte_order(path):
                     return None
                 if 0xD0 <= m <= 0xD7 or m == 0x01:        # RSTn / TEM: no length
                     continue
-                lenbytes = f.read(2)
+                lenbytes = read_bounded(2)
                 if len(lenbytes) < 2:
                     return None
                 payload_len = ((lenbytes[0] << 8) | lenbytes[1]) - 2
                 if payload_len < 0:
                     return None
-                if m == 0xE1:                     # APP1: Exif or XMP
-                    head = f.read(min(8, payload_len))
+                if m == 0xE1:                             # APP1: Exif or XMP
+                    head = read_bounded(min(8, payload_len))
                     if head[:6] == b"Exif\x00\x00":
                         bo = head[6:8]
                         return bo.decode("ascii") if bo in (b"II", b"MM") else None
-                    f.seek(payload_len - len(head), 1)   # not Exif (e.g. XMP): skip
+                    # Not Exif (e.g. XMP): skip the remaining payload.
+                    if not seek_bounded(payload_len - len(head)):
+                        return None
                 else:
-                    f.seek(payload_len, 1)        # skip this segment's payload
+                    # Skip this segment's payload.
+                    if not seek_bounded(payload_len):
+                        return None
             return None
     except OSError:
         return None
